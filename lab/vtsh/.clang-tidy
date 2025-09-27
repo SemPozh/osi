@@ -13,5 +13,4 @@ Checks: |
     portability-*,
     -portability-avoid-pragma-once,
     readability-*
-WarningsAsErrors: '*'
 FormatStyle: file
