@@ -9,8 +9,14 @@ target_include_directories(
     .
 )
 
+find_package(
+    OpenSSL REQUIRED
+)
+
 target_link_libraries(
     vtsh
     PRIVATE
     libvtsh
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )

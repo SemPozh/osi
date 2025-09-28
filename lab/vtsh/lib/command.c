@@ -92,7 +92,7 @@ void execute_command(Command* cmd) {
         return;
     }
 
-    if (strcmp(cmd->name, "calc-md5") == 0) {
+    if (strcmp(cmd->name, "factorize") == 0) {
         execute_factorize(cmd->args);
         return;
     }

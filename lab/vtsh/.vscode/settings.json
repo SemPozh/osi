@@ -4,4 +4,8 @@
         "-header-insertion=never",
     ],
     "files.eol": "\n",
+    "files.associations": {
+        "stat.h": "c",
+        "types.h": "c"
+    },
 }
