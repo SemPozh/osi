@@ -43,14 +43,6 @@ void execute_external(char* args[]) {
         return;
     }
 
-    printf("Debug: Trying to execute: '%s'\n", args[0]);
-    printf("Debug: Full command line: ");
-    int i;
-    for (i = 0; args[i] != NULL; i++) {
-        printf("'%s' ", args[i]);
-    }
-    printf("\n");
-
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork failed");
@@ -60,15 +52,7 @@ void execute_external(char* args[]) {
     if (pid == 0) {
         execvp(args[0], args);
         
-        perror("exec failed");
-        printf("Debug: Tried to execute: '%s'\n", args[0]);
-
-        if (access(args[0], F_OK) == -1) {
-            printf("Debug: File does not exist: '%s'\n", args[0]);
-        } else if (access(args[0], X_OK) == -1) {
-            printf("Debug: File exists but is not executable: '%s'\n", args[0]);
-        }
-        
+        perror("exec failed");  
         _exit(EXIT_FAILURE);
     } else {
         clock_t start_time = clock();
@@ -77,12 +61,6 @@ void execute_external(char* args[]) {
 
         double time_taken_ms = ((double)(end_time - start_time)) / CLOCKS_PER_SEC * SEC_TO_MICROSEC;
         printf("Execution time: %.6f ms\n", time_taken_ms);
-        
-        if (WIFEXITED(status)) {
-            printf("Process exited with status: %d\n", WEXITSTATUS(status));
-        } else if (WIFSIGNALED(status)) {
-            printf("Process killed by signal: %d\n", WTERMSIG(status));
-        }
     }
 }
 
