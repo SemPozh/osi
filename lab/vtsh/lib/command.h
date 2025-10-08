@@ -11,6 +11,11 @@ typedef struct {
     int argc;
 } Command;
 
+typedef struct {
+    char* name;
+    void (*function)(char** args);
+} BuiltinCommand;
+
 Command* create_command(char* input);
 void execute_command(Command* cmd);
 void free_command(Command* cmd);

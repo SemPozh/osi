@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include "command.h"
@@ -54,44 +55,57 @@ void execute_external(char* args[]) {
         
         perror("exec failed");  
         _exit(EXIT_FAILURE);
-    } else {
-        clock_t start_time = clock();
+    }
+    
+    if (pid > 0) {
+        struct timeval start, end;
+        long long start_time, end_time;
+    
+        gettimeofday(&start, NULL);
         waitpid(pid, &status, 0);
-        clock_t end_time = clock();
+        gettimeofday(&end, NULL);
 
-        double time_taken_ms = ((double)(end_time - start_time)) / CLOCKS_PER_SEC * SEC_TO_MICROSEC;
-        printf("Execution time: %.6f ms\n", time_taken_ms);
+        start_time = start.tv_sec * 1000000 + start.tv_usec;
+        end_time = end.tv_sec * 1000000 + end.tv_usec;
+        
+        double time_taken_ms = ((double)(end_time - start_time)) / 1000.0;
+        printf("Execution time: %.4f ms\n", time_taken_ms);
     }
 }
+
+BuiltinCommand builtins[] = {
+    {"exit", execute_exit},
+    {"mat-mul", execute_mat_mul},
+    {"calc-md5", execute_calc_md5},
+    {"ema-join-inner", execute_ema_join_inner},
+    {"factorize", execute_factorize},
+    {NULL, NULL}
+};
 
 void execute_command(Command* cmd) {
     if (cmd->argc == 0) {
         return;  
-    } 
-    
-    if (strcmp(cmd->name, "exit") == 0) {
-        execute_exit(cmd->args);
-        return;
-    }
-    
-    if (strcmp(cmd->name, "mat-mul") == 0) {
-        execute_mat_mul(cmd->args);
-        return;
-    }
-    
-    if (strcmp(cmd->name, "calc-md5") == 0) {
-        execute_calc_md5(cmd->args);
-        return;
-    }
-    
-    if (strcmp(cmd->name, "ema-join-inner") == 0) {
-        execute_ema_join_inner(cmd->args);
-        return;
     }
 
-    if (strcmp(cmd->name, "factorize") == 0) {
-        execute_factorize(cmd->args);
-        return;
+    struct timeval start, end;
+    long long start_time, end_time;
+    
+    gettimeofday(&start, NULL);
+
+    size_t i;
+
+    for (i = 0; builtins[i].name != NULL; i++) {
+        if (strcmp(cmd->name, builtins[i].name) == 0) {
+            builtins[i].function(cmd->args);
+            
+            gettimeofday(&end, NULL);
+            start_time = start.tv_sec * 1000000 + start.tv_usec;
+            end_time = end.tv_sec * 1000000 + end.tv_usec;
+            double time_taken_ms = ((double)(end_time - start_time)) / 1000.0;
+            printf("Execution time: %.4f ms\n", time_taken_ms);
+            return;
+        }
     }
+    
     execute_external(cmd->args);
 }
