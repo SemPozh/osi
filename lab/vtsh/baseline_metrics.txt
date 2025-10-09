@@ -1,0 +1,37 @@
+=== БАЗОВЫЕ ПОКАЗАТЕЛИ ===
+Sat Oct  4 13:13:38 MSK 2025
+--- Память ---
+               total        used        free      shared  buff/cache   available
+Mem:           7.5Gi       1.4Gi       5.6Gi       4.0Mi       492Mi       5.9Gi
+Swap:          2.0Gi          0B       2.0Gi
+--- Диски ---
+Linux 6.6.87.2-microsoft-standard-WSL2 (SkyBook) 	10/04/25 	_x86_64_	(16 CPU)
+
+Device            r/s     rkB/s   rrqm/s  %rrqm r_await rareq-sz     w/s     wkB/s   wrqm/s  %wrqm w_await wareq-sz     d/s     dkB/s   drqm/s  %drqm d_await dareq-sz     f/s f_await  aqu-sz  %util
+sda              0.03      1.37     0.00  13.20    1.31    49.37    0.00      0.00     0.00   0.00    0.00     0.00    0.00      0.00     0.00   0.00    0.00     0.00    0.00    0.00    0.00   0.00
+sdb              0.00      0.15     0.00  30.58   13.84    66.28    0.00      0.00     0.00   0.00    0.00     0.00    0.00      0.00     0.00   0.00    0.00     0.00    0.00    0.00    0.00  14.59
+sdc              0.00      0.02     0.00   0.00    0.17    22.73    0.00      0.00     0.00   0.00    4.00     2.00    0.00      0.00     0.00   0.00    0.00     0.00    0.00    4.00    0.00   0.00
+sdd             14.65     48.17     0.29   1.92    0.40     3.29    0.96     30.29     1.07  52.72    7.72    31.51    0.05     76.37     0.00   6.70    0.18  1645.80    0.60    1.22    0.01   0.72
+
+
+--- Процессы ---
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root      333514  2.3  9.4 54974708 735276 pts/0 Sl+  11:01   3:03 /root/.vscode-server/bin/e3a5acfb517a443235981655413d566533107e92/node --dns-result-order=ipv4first /root/.vscode-server/bin/e3a5acfb517a443235981655413d566533107e92/out/bootstrap-fork --type=extensionHost --transformURIs --useHostProxy=true
+root      348015  0.5  0.0   6356  4864 pts/2    S+   13:05   0:02 htop
+root           1  0.4  0.1 167116 12160 ?        Ss   Oct03   8:03 /lib/systemd/systemd --system --deserialize 66
+root      333400  0.3  1.8 11862680 142592 pts/0 Sl+  11:01   0:28 /root/.vscode-server/bin/e3a5acfb517a443235981655413d566533107e92/node /root/.vscode-server/bin/e3a5acfb517a443235981655413d566533107e92/out/server-main.js --host=127.0.0.1 --port=0 --connection-token=2104632700-624259358-2038039582-3689396245 --use-host-proxy --without-browser-env-var --disable-websocket-compression --accept-server-license-terms --telemetry-level=all
+root      333499  0.3  1.1 1175252 86520 pts/0   Rl+  11:01   0:27 /root/.vscode-server/bin/e3a5acfb517a443235981655413d566533107e92/node /root/.vscode-server/bin/e3a5acfb517a443235981655413d566533107e92/out/bootstrap-fork --type=ptyHost --logsPath /root/.vscode-server/data/logs/20251004T104414
+root         751  0.2  0.4  44188 37816 ?        S    Oct03   4:35 python3 /snap/ubuntu-desktop-installer/1286/usr/bin/cloud-init status --wait
+root      350454  0.2  0.0   3232  2048 pts/8    S+   13:09   0:00 iostat -x 1
+root           2  0.0  0.0   3072  1792 ?        Sl   Oct03   0:00 /init
+root           6  0.0  0.0   3072  1792 ?        Sl   Oct03   0:00 plan9 --control-socket 7 --log-level 4 --server-fd 8 --pipe-fd 10 --log-truncate
+root          77  0.0  0.0 152992  1536 ?        Ssl  Oct03   0:00 snapfuse /var/lib/snapd/snaps/bare_5.snap /snap/bare/5 -o ro,nodev,allow_other,suid
+root          78  0.0  0.0 152992  1536 ?        Ssl  Oct03   0:00 snapfuse /var/lib/snapd/snaps/core22_1963.snap /snap/core22/1963 -o ro,nodev,allow_other,suid
+root          86  0.0  0.1 377284 10700 ?        Ssl  Oct03   0:01 snapfuse /var/lib/snapd/snaps/core22_2133.snap /snap/core22/2133 -o ro,nodev,allow_other,suid
+root          90  0.0  0.0 153124  1412 ?        Ssl  Oct03   0:00 snapfuse /var/lib/snapd/snaps/gtk-common-themes_1535.snap /snap/gtk-common-themes/1535 -o ro,nodev,allow_other,suid
+root          97  0.0  0.0 152992  1408 ?        Ssl  Oct03   0:00 snapfuse /var/lib/snapd/snaps/snapd_24505.snap /snap/snapd/24505 -o ro,nodev,allow_other,suid
+root         102  0.0  0.1 601576 13744 ?        Ssl  Oct03   0:08 snapfuse /var/lib/snapd/snaps/snapd_25202.snap /snap/snapd/25202 -o ro,nodev,allow_other,suid
+root         107  0.0  0.0 152992  1408 ?        Ssl  Oct03   0:00 snapfuse /var/lib/snapd/snaps/ubuntu-desktop-installer_1276.snap /snap/ubuntu-desktop-installer/1276 -o ro,nodev,allow_other,suid
+root         110  0.0  0.1 302520  8464 ?        Ssl  Oct03   0:02 snapfuse /var/lib/snapd/snaps/ubuntu-desktop-installer_1286.snap /snap/ubuntu-desktop-installer/1286 -o ro,nodev,allow_other,suid
+root         214  0.0  0.0   4308  2688 ?        Ss   Oct03   0:00 /usr/sbin/cron -f -P
+message+     215  0.0  0.0   8828  4608 ?        Ss   Oct03   0:01 @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
