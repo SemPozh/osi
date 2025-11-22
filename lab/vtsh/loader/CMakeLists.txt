@@ -1,22 +1,15 @@
 add_executable(
-    vtsh
+    loader
     main.c
 )
 
 target_include_directories(
-    vtsh
+    loader
     PUBLIC
     .
 )
 
-find_package(
-    OpenSSL REQUIRED
-)
-
 target_link_libraries(
-    vtsh
+    loader
     PRIVATE
-    libvtsh
-    OpenSSL::SSL
-    OpenSSL::Crypto
 )

@@ -6,8 +6,14 @@ add_library(
     builtin.c
 )
 
+find_package(
+    OpenSSL REQUIRED
+)
+
 target_include_directories(
     libvtsh
     PUBLIC
+    OpenSSL::SSL 
+    OpenSSL::Crypto
     .
 )
