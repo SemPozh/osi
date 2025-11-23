@@ -20,4 +20,12 @@ int vtpc_fsync(int fd);
 int vtpc_cache_init(void);
 void vtpc_cache_stats(void);
 
+/* Функции для настройки параметров кэша */
+void vtpc_set_lru_k(int k);
+void vtpc_set_cache_blocks(int blocks);
+
+/* Функции для получения статистики */
+size_t vtpc_get_cache_hits(void);
+size_t vtpc_get_cache_misses(void);
+
 #endif
