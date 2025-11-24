@@ -4,10 +4,9 @@ project(
     vtpc
     VERSION 0.1
     DESCRIPTION "VT Page Cache"
-    LANGUAGES C
 )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_subdirectory(lib)
-add_subdirectory(loader)
+add_subdirectory(test)
