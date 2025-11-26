@@ -8,401 +8,535 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <stdint.h>
+#include <stdio.h>
 
 #define MAX_OPEN_FILES 1024
-#define VTPC_PATH_MAX 512
+#define CACHE_SIZE 256
+#define BLOCK_SIZE 4096
+#define LRU_K 2
+
+#ifndef O_DIRECT
+#define O_DIRECT 040000
+#endif
+
+typedef struct cache_block {
+    int fd;
+    off_t block_no;
+    char* data;  /* Изменяем на указатель для выравнивания */
+    int dirty;
+    unsigned long access_history[LRU_K];
+    int access_count;
+    struct cache_block* next;
+    struct cache_block* prev;
+} cache_block_t;
+
+typedef struct {
+    cache_block_t* blocks[CACHE_SIZE];
+    cache_block_t* lru_head;
+    cache_block_t* lru_tail;
+    unsigned long access_counter;
+} cache_t;
 
 typedef struct {
     int real_fd;
     off_t pos;
-    off_t size; /* tracked logical file size */
-    char path[VTPC_PATH_MAX];
+    off_t size;
+    char path[512];
     int flags;
     int mode;
     int used;
 } file_entry_t;
 
 static file_entry_t open_files[MAX_OPEN_FILES];
+static cache_t cache;
 static int cache_initialized = 0;
 
-static int init_cache_simple(void) {
+static unsigned long hash(int fd, off_t block_no) {
+    return ((unsigned long)fd * 2654435761UL + (unsigned long)block_no) % CACHE_SIZE;
+}
+
+static void cache_remove_block(cache_block_t* block) {
+    if (block->prev) block->prev->next = block->next;
+    if (block->next) block->next->prev = block->prev;
+    
+    if (cache.lru_head == block) cache.lru_head = block->next;
+    if (cache.lru_tail == block) cache.lru_tail = block->prev;
+    
+    unsigned long h = hash(block->fd, block->block_no);
+    cache_block_t** bucket = &cache.blocks[h];
+    while (*bucket) {
+        if (*bucket == block) {
+            *bucket = block->next;
+            break;
+        }
+        bucket = &(*bucket)->next;
+    }
+}
+
+static void cache_add_to_front(cache_block_t* block) {
+    block->next = cache.lru_head;
+    block->prev = NULL;
+    if (cache.lru_head) cache.lru_head->prev = block;
+    cache.lru_head = block;
+    if (!cache.lru_tail) cache.lru_tail = block;
+    
+    unsigned long h = hash(block->fd, block->block_no);
+    block->next = cache.blocks[h];
+    cache.blocks[h] = block;
+}
+
+static cache_block_t* cache_find_block(int fd, off_t block_no) {
+    unsigned long h = hash(fd, block_no);
+    cache_block_t* block = cache.blocks[h];
     int i;
+    
+    while (block) {
+        if (block->fd == fd && block->block_no == block_no) {
+            cache.access_counter++;
+            
+            if (block->access_count < LRU_K) {
+                block->access_history[block->access_count++] = cache.access_counter;
+            } else {
+                for (i = 0; i < LRU_K - 1; i++) {
+                    block->access_history[i] = block->access_history[i + 1];
+                }
+                block->access_history[LRU_K - 1] = cache.access_counter;
+            }
+            
+            cache_remove_block(block);
+            cache_add_to_front(block);
+            return block;
+        }
+        block = block->next;
+    }
+    return NULL;
+}
 
-    if (cache_initialized)
-        return 0;
+static cache_block_t* find_victim_block(void) {
+    cache_block_t* victim = NULL;
+    cache_block_t* current = NULL;
+    unsigned long min_kth_access = 0;
+    unsigned long kth_access = 0;
+    int i;
+    
+    current = cache.lru_head;
+    while (current) {
+        kth_access = 0;
+        if (current->access_count >= LRU_K) {
+            kth_access = current->access_history[0];
+        }
+        
+        if (!victim || kth_access < min_kth_access) {
+            victim = current;
+            min_kth_access = kth_access;
+        }
+        current = current->next;
+    }
+    
+    return victim;
+}
 
-    for (i = 0; i < MAX_OPEN_FILES; ++i) {
+static cache_block_t* cache_allocate_block(int fd, off_t block_no) {
+    cache_block_t* new_block = malloc(sizeof(cache_block_t));
+    if (!new_block) return NULL;
+    
+    memset(new_block, 0, sizeof(cache_block_t));
+    
+    /* Выделяем выровненную память для O_DIRECT */
+    if (posix_memalign((void**)&new_block->data, BLOCK_SIZE, BLOCK_SIZE) != 0) {
+        free(new_block);
+        return NULL;
+    }
+    
+    new_block->fd = fd;
+    new_block->block_no = block_no;
+    new_block->access_count = 1;
+    new_block->access_history[0] = ++cache.access_counter;
+    
+    cache_add_to_front(new_block);
+    return new_block;
+}
+
+static int cache_evict_block(void) {
+    cache_block_t* victim = find_victim_block();
+    if (!victim) return -1;
+    
+    if (victim->dirty) {
+        off_t offset = victim->block_no * BLOCK_SIZE;
+        /* Используем O_DIRECT для записи - обходим кеш ОС */
+        ssize_t written = pwrite(victim->fd, victim->data, BLOCK_SIZE, offset);
+        if (written != BLOCK_SIZE) {
+            return -1;
+        }
+        victim->dirty = 0;
+    }
+    
+    cache_remove_block(victim);
+    free(victim->data);  /* Освобождаем выровненную память */
+    free(victim);
+    return 0;
+}
+
+static int init_cache(void) {
+    int i;
+    
+    if (cache_initialized) return 0;
+    
+    memset(&cache, 0, sizeof(cache_t));
+    cache.access_counter = 0;
+    
+    for (i = 0; i < MAX_OPEN_FILES; i++) {
         open_files[i].real_fd = -1;
-        open_files[i].pos = 0;
-        open_files[i].size = 0;
-        open_files[i].path[0] = '\0';
-        open_files[i].flags = 0;
-        open_files[i].mode = 0;
         open_files[i].used = 0;
     }
-
+    
     cache_initialized = 1;
     return 0;
 }
 
-static void global_inode_refresh(const char *path) {
-    int fd;
-    if (path == NULL || path[0] == '\0') return;
-    fd = open(path, O_RDONLY);
-    if (fd >= 0) close(fd);
+static int count_used_blocks(void) {
+    int count = 0;
+    int i;
+    cache_block_t* block;
+    
+    for (i = 0; i < CACHE_SIZE; i++) {
+        block = cache.blocks[i];
+        while (block) {
+            count++;
+            block = block->next;
+        }
+    }
+    return count;
 }
 
-/* Helper: reopen underlying file to invalidate other caches.
-   Returns new fd on success, -1 on failure (and leaves original fd unchanged).
-*/
-static int reopen_real_fd(const char *path, int flags, int mode) {
-    int newfd;
-    newfd = open(path, flags, mode);
-    return newfd;
+static int ensure_cache_space(void) {
+    int used_blocks = count_used_blocks();
+    if (used_blocks < CACHE_SIZE) return 0;
+    
+    return cache_evict_block();
 }
 
-/* Helper to refresh tracked size from real fd (best-effort). */
-static void refresh_size_from_fd(int slot) {
-    struct stat st;
-    int fd;
-    if (slot < 0 || slot >= MAX_OPEN_FILES) return;
-    if (!open_files[slot].used) return;
-    fd = open_files[slot].real_fd;
-    if (fd == -1) return;
-    if (fstat(fd, &st) == 0) {
-        open_files[slot].size = st.st_size;
+static int read_into_cache(int fd, off_t block_no) {
+    cache_block_t* block;
+    off_t offset;
+    ssize_t read_bytes;
+    
+    if (ensure_cache_space() < 0) return -1;
+    
+    block = cache_allocate_block(fd, block_no);
+    if (!block) return -1;
+    
+    offset = block_no * BLOCK_SIZE;
+    /* Используем O_DIRECT для чтения - обходим кеш ОС */
+    read_bytes = pread(fd, block->data, BLOCK_SIZE, offset);
+    if (read_bytes < 0) {
+        cache_remove_block(block);
+        free(block->data);
+        free(block);
+        return -1;
+    }
+    
+    if (read_bytes < BLOCK_SIZE) {
+        memset(block->data + read_bytes, 0, BLOCK_SIZE - read_bytes);
+    }
+    
+    return 0;
+}
+
+static int flush_block(cache_block_t* block) {
+    off_t offset;
+    ssize_t written;
+    
+    if (!block->dirty) return 0;
+    
+    offset = block->block_no * BLOCK_SIZE;
+    /* Используем O_DIRECT для записи - обходим кеш ОС */
+    written = pwrite(block->fd, block->data, BLOCK_SIZE, offset);
+    if (written != BLOCK_SIZE) return -1;
+    
+    block->dirty = 0;
+    return 0;
+}
+
+static int flush_file_blocks(int fd) {
+    int i;
+    cache_block_t* block;
+    
+    for (i = 0; i < CACHE_SIZE; i++) {
+        block = cache.blocks[i];
+        while (block) {
+            if (block->fd == fd && block->dirty) {
+                if (flush_block(block) < 0) return -1;
+            }
+            block = block->next;
+        }
+    }
+    return 0;
+}
+
+static void remove_file_blocks(int fd) {
+    int i;
+    cache_block_t** bucket;
+    cache_block_t* to_remove;
+    
+    for (i = 0; i < CACHE_SIZE; i++) {
+        bucket = &cache.blocks[i];
+        while (*bucket) {
+            if ((*bucket)->fd == fd) {
+                to_remove = *bucket;
+                *bucket = to_remove->next;
+                
+                if (to_remove->prev) to_remove->prev->next = to_remove->next;
+                if (to_remove->next) to_remove->next->prev = to_remove->prev;
+                
+                if (cache.lru_head == to_remove) cache.lru_head = to_remove->next;
+                if (cache.lru_tail == to_remove) cache.lru_tail = to_remove->prev;
+                
+                free(to_remove->data);
+                free(to_remove);
+            } else {
+                bucket = &(*bucket)->next;
+            }
+        }
     }
 }
 
 int vtpc_open(const char* path, int mode, int access) {
     int real_fd;
-    int i;
     int slot;
+    int i;
     struct stat st;
-
-    if (!cache_initialized) {
-        if (init_cache_simple() < 0)
-            return -1;
+    
+    if (!cache_initialized) init_cache();
+    
+    /* Открываем файл с O_DIRECT для обхода кеша ОС */
+    real_fd = open(path, mode | O_DIRECT, access);
+    if (real_fd < 0) {
+        /* Если O_DIRECT не поддерживается, пробуем без него */
+        real_fd = open(path, mode, access);
+        if (real_fd < 0) return -1;
     }
-
-    real_fd = open(path, mode, access);
-    if (real_fd < 0)
-        return -1;
-
+    
     slot = -1;
-    for (i = 0; i < MAX_OPEN_FILES; ++i) {
+    for (i = 0; i < MAX_OPEN_FILES; i++) {
         if (!open_files[i].used) {
             slot = i;
             break;
         }
     }
-
+    
     if (slot == -1) {
         close(real_fd);
         errno = EMFILE;
         return -1;
     }
-
+    
+    if (fstat(real_fd, &st) < 0) {
+        close(real_fd);
+        return -1;
+    }
+    
     open_files[slot].real_fd = real_fd;
     open_files[slot].pos = 0;
-    open_files[slot].size = 0;
-    /* get current size if available */
-    if (fstat(real_fd, &st) == 0) {
-        open_files[slot].size = st.st_size;
-    }
-
-    /* store path and flags/mode for future reopen */
-    strncpy(open_files[slot].path, path, VTPC_PATH_MAX - 1);
-    open_files[slot].path[VTPC_PATH_MAX - 1] = '\0';
+    open_files[slot].size = st.st_size;
+    strncpy(open_files[slot].path, path, sizeof(open_files[slot].path) - 1);
+    open_files[slot].path[sizeof(open_files[slot].path) - 1] = '\0';
     open_files[slot].flags = mode;
     open_files[slot].mode = access;
     open_files[slot].used = 1;
-
+    
     return slot;
 }
 
 int vtpc_close(int fd) {
-    int real_fd;
-
-    if (!cache_initialized)
-        init_cache_simple();
-
-    if (fd < 0 || fd >= MAX_OPEN_FILES) {
+    int result;
+    
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !open_files[fd].used) {
         errno = EBADF;
         return -1;
     }
-
-    if (!open_files[fd].used) {
-        errno = EBADF;
+    
+    if (flush_file_blocks(open_files[fd].real_fd) < 0) {
         return -1;
     }
-
-    real_fd = open_files[fd].real_fd;
-
-    /* close underlying */
-    if (real_fd != -1) {
-        close(real_fd);
-    }
-
+    
+    remove_file_blocks(open_files[fd].real_fd);
+    
+    result = close(open_files[fd].real_fd);
+    
     open_files[fd].real_fd = -1;
-    open_files[fd].pos = 0;
-    open_files[fd].size = 0;
-    open_files[fd].path[0] = '\0';
-    open_files[fd].flags = 0;
-    open_files[fd].mode = 0;
     open_files[fd].used = 0;
-
-    return 0;
+    open_files[fd].path[0] = '\0';
+    
+    return result;
 }
 
 ssize_t vtpc_read(int fd, void* buf, size_t count) {
-    struct stat st;
-    off_t filesize;
-    off_t remaining;
-    ssize_t got;
-    int real_fd;
-
-    if (!cache_initialized)
-        init_cache_simple();
-
-    if (fd < 0 || fd >= MAX_OPEN_FILES) {
+    file_entry_t* file;
+    char* buffer;
+    size_t total_read;
+    cache_block_t* block;
+    off_t block_no;
+    size_t block_offset;
+    size_t to_read;
+    
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !open_files[fd].used) {
         errno = EBADF;
         return -1;
     }
-
-    if (!open_files[fd].used) {
-        errno = EBADF;
-        return -1;
+    
+    file = &open_files[fd];
+    
+    if (file->pos >= file->size) return 0;
+    
+    if (file->pos + count > file->size) {
+        count = file->size - file->pos;
     }
-
-    real_fd = open_files[fd].real_fd;
-    if (real_fd == -1) {
-        errno = EBADF;
-        return -1;
-    }
-
-    /* Use tracked size as source of truth; refresh from fd as fallback */
-    filesize = open_files[fd].size;
-    if (filesize == 0) {
-        /* try to get real size */
-        if (fstat(real_fd, &st) == 0) {
-            filesize = st.st_size;
-            open_files[fd].size = filesize;
+    
+    buffer = (char*)buf;
+    total_read = 0;
+    
+    while (count > 0) {
+        block_no = file->pos / BLOCK_SIZE;
+        block_offset = file->pos % BLOCK_SIZE;
+        to_read = BLOCK_SIZE - block_offset;
+        if (to_read > count) to_read = count;
+        
+        block = cache_find_block(file->real_fd, block_no);
+        if (!block) {
+            if (read_into_cache(file->real_fd, block_no) < 0) {
+                return -1;
+            }
+            block = cache_find_block(file->real_fd, block_no);
+            if (!block) return -1;
         }
+        
+        memcpy(buffer, block->data + block_offset, to_read);
+        
+        buffer += to_read;
+        file->pos += to_read;
+        total_read += to_read;
+        count -= to_read;
     }
-
-    if (open_files[fd].pos >= filesize) {
-        return 0; /* EOF */
-    }
-
-    remaining = filesize - open_files[fd].pos;
-    if ((off_t)count > remaining)
-        count = (size_t)remaining;
-
-    got = pread(real_fd, buf, count, open_files[fd].pos);
-    if (got > 0) {
-        open_files[fd].pos += got;
-    }
-
-    return got;
-}
-
-/* internal helper: try to sync and reopen underlying fd to invalidate other caches.
-   Returns 0 on success, -1 on failure (but we try best-effort).
-*/
-static int sync_and_reopen_slot(int slot) {
-    int oldfd;
-    int newfd;
-    const char *path;
-    int flags;
-    int mode;
-    struct stat st;
-
-    if (slot < 0 || slot >= MAX_OPEN_FILES) return -1;
-    if (!open_files[slot].used) return -1;
-
-    oldfd = open_files[slot].real_fd;
-    path = open_files[slot].path;
-    flags = open_files[slot].flags;
-    mode = open_files[slot].mode;
-
-    if (oldfd != -1) {
-        /* try to flush */
-        (void)fsync(oldfd);
-    }
-
-    /* Try to reopen: open new fd first; if success, close old and replace */
-    newfd = reopen_real_fd(path, flags, mode);
-    if (newfd < 0) {
-        /* reopen failed — best-effort: still return -1, but keep old fd and refresh size */
-        if (oldfd != -1 && fstat(oldfd, &st) == 0) {
-            open_files[slot].size = st.st_size;
-        }
-        /* try global inode refresh as fallback */
-        global_inode_refresh(path);
-        return -1;
-    }
-
-    /* get size from newfd */
-    if (fstat(newfd, &st) == 0) {
-        open_files[slot].size = st.st_size;
-    }
-
-    /* close old and replace */
-    if (oldfd != -1) close(oldfd);
-    open_files[slot].real_fd = newfd;
-    return 0;
+    
+    return total_read;
 }
 
 ssize_t vtpc_write(int fd, const void* buf, size_t count) {
-    struct stat st;
-    off_t needed_end;
-    ssize_t written;
-    int real_fd;
-    int res;
-
-    if (!cache_initialized)
-        init_cache_simple();
-
-    if (fd < 0 || fd >= MAX_OPEN_FILES) {
+    file_entry_t* file;
+    const char* buffer;
+    size_t total_written;
+    cache_block_t* block;
+    off_t block_no;
+    size_t block_offset;
+    size_t to_write;
+    off_t offset;
+    ssize_t read_bytes;
+    
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !open_files[fd].used) {
         errno = EBADF;
         return -1;
     }
-
-    if (!open_files[fd].used) {
-        errno = EBADF;
-        return -1;
-    }
-
-    real_fd = open_files[fd].real_fd;
-    if (real_fd == -1) {
-        errno = EBADF;
-        return -1;
-    }
-
-    needed_end = open_files[fd].pos + (off_t)count;
-
-    /* ensure underlying file is large enough */
-    if (fstat(real_fd, &st) < 0) {
-        return -1;
-    }
-
-    if (st.st_size < needed_end) {
-        if (ftruncate(real_fd, needed_end) < 0) {
-            return -1;
+    
+    file = &open_files[fd];
+    buffer = (const char*)buf;
+    total_written = 0;
+    
+    while (count > 0) {
+        block_no = file->pos / BLOCK_SIZE;
+        block_offset = file->pos % BLOCK_SIZE;
+        to_write = BLOCK_SIZE - block_offset;
+        if (to_write > count) to_write = count;
+        
+        block = cache_find_block(file->real_fd, block_no);
+        if (!block) {
+            if (ensure_cache_space() < 0) return -1;
+            block = cache_allocate_block(file->real_fd, block_no);
+            if (!block) return -1;
+            
+            if (block_offset > 0 || to_write < BLOCK_SIZE) {
+                offset = block_no * BLOCK_SIZE;
+                /* Используем O_DIRECT для чтения - обходим кеш ОС */
+                read_bytes = pread(file->real_fd, block->data, BLOCK_SIZE, offset);
+                if (read_bytes < 0 && errno != EINTR) {
+                    cache_remove_block(block);
+                    free(block->data);
+                    free(block);
+                    return -1;
+                }
+            }
+        }
+        
+        memcpy(block->data + block_offset, buffer, to_write);
+        block->dirty = 1;
+        
+        buffer += to_write;
+        file->pos += to_write;
+        total_written += to_write;
+        count -= to_write;
+        
+        if (file->pos > file->size) {
+            file->size = file->pos;
         }
     }
-
-    written = pwrite(real_fd, buf, count, open_files[fd].pos);
-    if (written > 0) {
-        open_files[fd].pos += written;
-        /* update tracked size */
-        if (open_files[fd].pos > open_files[fd].size) {
-            open_files[fd].size = open_files[fd].pos;
-        }
-    }
-
-    /* Ensure data is visible to other descriptors/processes:
-       fsync + reopen pattern to invalidate other page-cache views.
-       Also perform a global inode refresh (open/close) to force kernel to
-       refresh visibility for preexisting descriptors (addresses observed EOF).
-       Best-effort: if reopen fails, we still return success of write.
-    */
-    res = sync_and_reopen_slot(fd);
-    (void)res;
-
-    /* global inode refresh to make size visible to other FDs */
-    global_inode_refresh(open_files[fd].path);
-
-    return written;
+    
+    return total_written;
 }
 
 off_t vtpc_lseek(int fd, off_t offset, int whence) {
-    struct stat st;
-    off_t newpos;
-    int real_fd;
-
-    if (!cache_initialized)
-        init_cache_simple();
-
-    if (fd < 0 || fd >= MAX_OPEN_FILES) {
+    file_entry_t* file;
+    off_t new_pos;
+    
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !open_files[fd].used) {
         errno = EBADF;
         return -1;
     }
-
-    if (!open_files[fd].used) {
-        errno = EBADF;
-        return -1;
+    
+    file = &open_files[fd];
+    
+    switch (whence) {
+        case SEEK_SET:
+            new_pos = offset;
+            break;
+        case SEEK_CUR:
+            new_pos = file->pos + offset;
+            break;
+        case SEEK_END:
+            new_pos = file->size + offset;
+            break;
+        default:
+            errno = EINVAL;
+            return -1;
     }
-
-    real_fd = open_files[fd].real_fd;
-    if (real_fd == -1) {
-        errno = EBADF;
-        return -1;
-    }
-
-    if (whence == SEEK_SET) {
-        newpos = offset;
-    } else if (whence == SEEK_CUR) {
-        newpos = open_files[fd].pos + offset;
-    } else if (whence == SEEK_END) {
-        /* use tracked size as base; refresh from fd if unknown */
-        if (open_files[fd].size == 0) {
-            if (fstat(real_fd, &st) == 0) {
-                open_files[fd].size = st.st_size;
-            }
-        }
-        newpos = open_files[fd].size + offset;
-    } else {
+    
+    if (new_pos < 0) {
         errno = EINVAL;
         return -1;
     }
-
-    if (newpos < 0) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    open_files[fd].pos = newpos;
-    return newpos;
+    
+    file->pos = new_pos;
+    return new_pos;
 }
 
 int vtpc_fsync(int fd) {
-    int real_fd;
-    int res;
-
-    if (!cache_initialized)
-        init_cache_simple();
-
-    if (fd < 0 || fd >= MAX_OPEN_FILES) {
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !open_files[fd].used) {
         errno = EBADF;
         return -1;
     }
-
-    if (!open_files[fd].used) {
-        errno = EBADF;
+    
+    if (flush_file_blocks(open_files[fd].real_fd) < 0) {
         return -1;
     }
-
-    real_fd = open_files[fd].real_fd;
-    if (real_fd == -1) {
-        errno = EBADF;
-        return -1;
-    }
-
-    res = fsync(real_fd);
-    /* Also try reopen and global inode refresh to ensure other descriptors see updates */
-    (void)sync_and_reopen_slot(fd);
-    global_inode_refresh(open_files[fd].path);
-
-    return res;
+    
+    return fsync(open_files[fd].real_fd);
 }
 
 int vtpc_cache_init(void) {
-    return init_cache_simple();
+    return init_cache();
 }
 
 void vtpc_cache_stats(void) {
-    /* minimal stats placeholder */
+    int used_blocks = count_used_blocks();
+    printf("Cache stats: %d/%d blocks used\n", used_blocks, CACHE_SIZE);
 }
-
